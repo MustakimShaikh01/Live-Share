@@ -1,0 +1,18 @@
+{
+  "name": "live-share-2person",
+  "version": "1.0.0",
+  "description": "2-person live sharing (audio/video/screen) with admin-created room codes using WebRTC and Socket.io",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

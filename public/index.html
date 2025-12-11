@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>LiveShare — 2 Person Live Screen/Audio/Video</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:system-ui, -apple-system, sans-serif; padding:12px; max-width:980px;margin:auto;}
+    .panel{border:1px solid #ddd;padding:12px;border-radius:8px;margin-bottom:12px;}
+    video{width:48%;height:300px;background:#000;object-fit:cover;border-radius:6px;}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;}
+    input[type=text], input[type=password]{padding:8px;border-radius:6px;border:1px solid #ccc;}
+    button{padding:8px 10px;border-radius:6px;}
+    #status{font-size:13px;color:#555;margin-top:8px;}
+  </style>
+</head>
+<body>
+  <h1>LiveShare — 2 Person</h1>
+
+  <div class="panel" id="authPanel">
+    <h3>Admin: create room</h3>
+    <div class="controls">
+      <input id="adminPassword" type="password" placeholder="Admin password" />
+      <button id="createRoomBtn">Create Room</button>
+      <span id="roomCodeDisplay"></span>
+    </div>
+    <hr/>
+    <h3>Join room (participant)</h3>
+    <div class="controls">
+      <input id="joinCode" type="text" placeholder="Enter room code" />
+      <button id="joinBtn">Join Room</button>
+      <button id="leaveBtn" disabled>Leave</button>
+    </div>
+  </div>
+
+  <div class="panel" id="mediaPanel" style="display:none;">
+    <h3>Media & Share</h3>
+    <div class="controls">
+      <button id="startCamBtn">Start Camera+Mic</button>
+      <button id="stopCamBtn" disabled>Stop Camera</button>
+      <button id="shareScreenBtn">Share Screen (app/window)</button>
+      <button id="toggleAudioBtn">Mute/Unmute Outgoing Audio</button>
+      <button id="sendOfferBtn" disabled>Make Call (if waiting)</button>
+    </div>
+    <div id="status"></div>
+    <hr/>
+    <div>
+      <video id="localVideo" autoplay muted playsinline></video>
+      <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
