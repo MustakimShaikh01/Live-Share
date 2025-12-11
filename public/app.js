@@ -1,4 +1,4 @@
-// Client-side app.js
+// Client-side app.js (modified to support Option D: button based switching)
 const socket = io();
 let pc = null;
 let localStream = null;
@@ -6,11 +6,13 @@ let remoteStream = null;
 let roomCode = null;
 let joined = false;
 let isMuted = false;
+let otherId = null;
+let layoutMode = 'normal'; // 'normal' | 'remote-big' | 'local-big'
 
-// STUN servers
+/* STUN servers */
 const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-// DOM
+/* DOM */
 const createRoomBtn = document.getElementById('createRoomBtn');
 const adminPassword = document.getElementById('adminPassword');
 const roomCodeDisplay = document.getElementById('roomCodeDisplay');
@@ -27,8 +29,14 @@ const statusEl = document.getElementById('status');
 const localVideo = document.getElementById('localVideo');
 const remoteVideo = document.getElementById('remoteVideo');
 
-function log(s){ console.log(s); statusEl.innerText = typeof s === 'string' ? s : JSON.stringify(s); }
+/* Option D buttons */
+const btnRemoteBig = document.getElementById('btnRemoteBig');
+const btnLocalBig = document.getElementById('btnLocalBig');
+const btnNormalView = document.getElementById('btnNormalView');
 
+function log(s){ console.log(s); statusEl.innerText = typeof s === 'string' ? 'Status: ' + s : 'Status: ' + JSON.stringify(s); }
+
+/* Admin create room */
 createRoomBtn.onclick = async () => {
   const pw = adminPassword.value.trim();
   if (!pw) return alert('Enter admin password (see .env.example)');
@@ -38,9 +46,10 @@ createRoomBtn.onclick = async () => {
   roomCode = j.code;
   roomCodeDisplay.innerText = 'Room code: ' + roomCode;
   joinCode.value = roomCode;
-  alert('Room created: ' + roomCode + '\\nShare this code with another participant.');
+  alert('Room created: ' + roomCode + '\nShare this code with another participant.');
 };
 
+/* Join room */
 joinBtn.onclick = async () => {
   const code = joinCode.value.trim();
   if (!code) return alert('Enter room code');
@@ -48,11 +57,13 @@ joinBtn.onclick = async () => {
   socket.emit('join-room', { room: roomCode });
 };
 
+/* Leave */
 leaveBtn.onclick = () => {
   socket.emit('leave-room');
   cleanup();
 };
 
+/* Start camera & mic */
 startCamBtn.onclick = async () => {
   try {
     const s = await navigator.mediaDevices.getUserMedia({ video:true, audio:true });
@@ -62,6 +73,7 @@ startCamBtn.onclick = async () => {
   }
 };
 
+/* Stop camera */
 stopCamBtn.onclick = () => {
   if (localStream) {
     localStream.getTracks().forEach(t => t.stop());
@@ -72,12 +84,12 @@ stopCamBtn.onclick = () => {
   startCamBtn.disabled = false;
 };
 
+/* Share screen/app (may include system audio if OS exposes it) */
 shareScreenBtn.onclick = async () => {
   try {
     const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
     // If we already have a camera stream, replace video track; otherwise use screen as local stream
     if (localStream) {
-      // replace video track in localStream and in peer connection
       const screenTrack = screenStream.getVideoTracks()[0];
       const oldVideoTrack = localStream.getVideoTracks()[0];
       if (oldVideoTrack) {
@@ -93,16 +105,17 @@ shareScreenBtn.onclick = async () => {
       attachLocalStream(screenStream);
     }
 
-    // when user stops screen sharing, restore camera if available
-    screenStream.getVideoTracks()[0].onended = () => {
+    // when user stops screen sharing, log
+    const vTrack = screenStream.getVideoTracks()[0];
+    if (vTrack) vTrack.onended = () => {
       log('Screen share ended');
-      // optional: you can restart camera or leave as-is
     };
   } catch (e) {
     alert('Screen share failed: ' + e.message);
   }
 };
 
+/* Mute/unmute outgoing audio */
 toggleAudioBtn.onclick = () => {
   if (!localStream) return;
   const audioTracks = localStream.getAudioTracks();
@@ -112,28 +125,28 @@ toggleAudioBtn.onclick = () => {
   toggleAudioBtn.innerText = isMuted ? 'Unmute Outgoing Audio' : 'Mute Outgoing Audio';
 };
 
+/* Manual offer */
 sendOfferBtn.onclick = async () => {
   if (!pc) await createPeerConnection();
-  // Make an offer to remote peer (useful if you joined first and need to start)
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
+  if (!otherId) return alert('No other peer id available to send offer to.');
   socket.emit('signal', { to: otherId, data: { type: 'offer', sdp: offer.sdp } });
   log('Offer sent');
 };
 
-let otherId = null;
-
+/* Socket event handling */
 socket.on('connect', () => log('socket connected: ' + socket.id));
+
 socket.on('joined', async ({ you, others }) => {
   log('Joined room as ' + you + ', others: ' + JSON.stringify(others));
   joined = true;
   mediaPanel.style.display = 'block';
   leaveBtn.disabled = false;
-  // If there is already someone, store otherId and create RTCPeerConnection as callee (wait for offer)
+  // If someone present, store otherId
   if (others && others.length > 0) {
     otherId = others[0];
     log('Other present: ' + otherId + ' — waiting for offer or create one as needed.');
-    // We will wait for offer (the other may create), but allow manual offer if needed.
     sendOfferBtn.disabled = false;
   } else {
     log('Waiting for peer to join...');
@@ -144,7 +157,7 @@ socket.on('joined', async ({ you, others }) => {
 socket.on('peer-joined', ({ id }) => {
   log('Peer joined: ' + id);
   otherId = id;
-  // When a new peer joins and we already have media, we can initiate the call
+  // If we have media, initiate call
   if (localStream) {
     createPeerConnection().then(async () => {
       const offer = await pc.createOffer();
@@ -153,7 +166,6 @@ socket.on('peer-joined', ({ id }) => {
       log('Sent offer to ' + otherId);
     });
   } else {
-    // No media yet; prompt user to start camera
     log('Start your camera/mic or screen to begin call.');
   }
   sendOfferBtn.disabled = false;
@@ -167,6 +179,8 @@ socket.on('peer-left', ({ id }) => {
     pc.close();
     pc = null;
   }
+  // Reset layout to normal when peer leaves
+  setNormalView();
 });
 
 socket.on('error-message', (m) => alert('Server: ' + m));
@@ -193,6 +207,7 @@ socket.on('signal', async ({ from, data }) => {
   }
 });
 
+/* Create RTCPeerConnection */
 async function createPeerConnection() {
   pc = new RTCPeerConnection(config);
   remoteStream = new MediaStream();
@@ -205,7 +220,13 @@ async function createPeerConnection() {
   };
 
   pc.ontrack = (evt) => {
-    evt.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
+    // Attach tracks to remoteStream
+    if (evt.streams && evt.streams[0]) {
+      evt.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
+    } else {
+      // fallback
+      evt.track && remoteStream.addTrack(evt.track);
+    }
   };
 
   // add local tracks if present
@@ -222,6 +243,7 @@ async function createPeerConnection() {
   return pc;
 }
 
+/* Attach a local stream (camera or screen) */
 function attachLocalStream(s) {
   // stop existing local tracks
   if (localStream) {
@@ -239,8 +261,28 @@ function attachLocalStream(s) {
       if (sender) sender.replaceTrack(track);
       else pc.addTrack(track, localStream);
     });
+  } else {
+    // if a peer is present, initiate connection
+    if (otherId) {
+      createPeerConnection().then(() => {
+        // auto-offer
+        createAndSendOfferIfReady();
+      });
+    }
   }
 }
+
+/* Create and send offer if pc exists and otherId set */
+async function createAndSendOfferIfReady() {
+  if (!pc) return;
+  if (!otherId) return;
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  socket.emit('signal', { to: otherId, data: { type: 'offer', sdp: offer.sdp } });
+  log('Offer created and sent');
+}
+
+/* Cleanup */
 function cleanup() {
   if (localStream) {
     localStream.getTracks().forEach(t => t.stop());
@@ -257,8 +299,70 @@ function cleanup() {
   joinCode.value = '';
   leaveBtn.disabled = true;
   sendOfferBtn.disabled = true;
+  // reset view to normal
+  setNormalView();
 }
 
+/* Layout control functions for Option D */
+function setRemoteBig() {
+  // remove classes first
+  clearVideoClasses();
+  // apply remote big
+  remoteVideo.classList.add('big-video');
+  // local as pip
+  localVideo.classList.add('pip');
+  localVideo.classList.remove('hide'); // ensure visible
+  remoteVideo.classList.remove('hide');
+  layoutMode = 'remote-big';
+  log('Layout: remote big');
+}
+
+function setLocalBig() {
+  clearVideoClasses();
+  localVideo.classList.add('big-video');
+  // remote becomes pip (small) or hide remote? we'll make remote small inline
+  remoteVideo.classList.add('pip');
+  remoteVideo.classList.remove('hide');
+  localVideo.classList.remove('hide');
+  layoutMode = 'local-big';
+  log('Layout: local big');
+}
+
+function setNormalView() {
+  clearVideoClasses();
+  // ensure both visible with default style
+  localVideo.classList.remove('hide');
+  remoteVideo.classList.remove('hide');
+  layoutMode = 'normal';
+  log('Layout: normal');
+}
+
+/* helper to clear layout classes */
+function clearVideoClasses() {
+  [localVideo, remoteVideo].forEach(v => {
+    v.classList.remove('big-video', 'pip', 'hide');
+    // reset width/height to defaults by removing inline styles if any
+    v.style.width = '';
+    v.style.height = '';
+  });
+}
+
+/* attach button event listeners for Option D */
+btnRemoteBig.onclick = () => setRemoteBig();
+btnLocalBig.onclick = () => setLocalBig();
+btnNormalView.onclick = () => setNormalView();
+
+/* also allow clicking on videos to toggle respective big mode */
+localVideo.addEventListener('click', () => {
+  if (layoutMode === 'local-big') setNormalView();
+  else setLocalBig();
+});
+remoteVideo.addEventListener('click', () => {
+  if (layoutMode === 'remote-big') setNormalView();
+  else setRemoteBig();
+});
+
+/* beforeunload to leave room */
 window.addEventListener('beforeunload', () => {
   if (joined) socket.emit('leave-room');
 });
