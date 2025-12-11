@@ -2,128 +2,264 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>LiveShare — 2 Person Live Screen/Audio/Video</title>
+  <title>LiveShare — Clean Dark Meet-like UI</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     :root{
-      --gap: 12px;
-      --video-height: 320px;
-      --video-radius: 8px;
+      --bg:#0f1720;
+      --panel:#0b1220;
+      --muted:#94a3b8;
+      --accent:#3b82f6;
+      --surface:#0b1220;
+      --gap:12px;
+      --radius:10px;
     }
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
     body{
-      font-family:system-ui, -apple-system, sans-serif;
-      padding:16px;
-      max-width:1100px;
-      margin:auto;
-      background: #fafafa;
-      color: #111;
+      background: radial-gradient(1200px 600px at 10% 10%, rgba(59,130,246,0.06), transparent 6%),
+                  linear-gradient(180deg, rgba(255,255,255,0.02), transparent 30%),
+                  var(--bg);
+      color:#e6eef8;
+      padding:18px;
+      box-sizing:border-box;
     }
-    .panel{
-      border:1px solid #e2e2e2;
+
+    .app {
+      max-width:1200px;
+      margin: 0 auto;
+      display:flex;
+      gap:var(--gap);
+      flex-direction:column;
+    }
+
+    header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
+    h1{ font-size:18px; margin:0; font-weight:600; color:#fff; }
+
+    /* panels */
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border:1px solid rgba(255,255,255,0.04);
       padding:12px;
-      border-radius:8px;
-      margin-bottom:16px;
-      background:white;
-      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+      border-radius:var(--radius);
+      box-shadow: 0 6px 26px rgba(2,6,23,0.6);
     }
 
-    .controls{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-    input[type=text], input[type=password]{ padding:8px;border-radius:6px;border:1px solid #ccc; }
-    button{ padding:8px 12px;border-radius:6px; border:none; background:#007bff; color:white; cursor:pointer; }
-    button.secondary{ background:#6c757d; }
-    button.ghost{ background:transparent; border:1px solid #ccc; color:#333; }
+    .controls{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .controls .group { display:flex; gap:8px; align-items:center; }
 
-    #status{ font-size:13px; color:#444; margin-top:8px; }
+    input[type=text], input[type=password], select {
+      background:transparent;
+      border:1px solid rgba(255,255,255,0.06);
+      color:var(--muted);
+      padding:8px 10px;
+      border-radius:8px;
+      min-width:160px;
+    }
 
-    /* video layout */
-    .video-row{ display:flex; gap: var(--gap); align-items:flex-start; justify-content:space-between; }
-    video{ width:48%; height: var(--video-height); background:#000; object-fit:cover; border-radius:var(--video-radius); cursor:default; transition: all 200ms ease; box-shadow: 0 4px 14px rgba(0,0,0,0.08); }
+    button {
+      background:var(--accent);
+      border:none;
+      color:#fff;
+      padding:8px 12px;
+      border-radius:8px;
+      cursor:pointer;
+      font-weight:600;
+    }
+    button.ghost { background:transparent; border:1px solid rgba(255,255,255,0.06); color:var(--muted); }
+    button.secondary { background:#223047; color:#dbeafe; }
 
-    /* Big fullscreen mode (used for either local or remote) */
+    /* top area: auth + device selection */
+    .top-row { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-start; }
+    .left-col { flex:1 1 360px; min-width:260px; }
+    .right-col { flex:1 1 560px; min-width:260px; }
+
+    /* video area */
+    .video-area { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; }
+    .video-col { flex:1 1 48%; min-width:260px; display:flex; flex-direction:column; gap:8px; }
+    .video-frame {
+      background:#000;
+      border-radius:10px;
+      overflow:hidden;
+      position:relative;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    video {
+      width:100%;
+      height:calc(56vw);
+      max-height:380px;
+      object-fit:cover;
+      display:block;
+      background:#000;
+    }
+
+    /* pip small style */
+    .small {
+      position: absolute;
+      right:12px;
+      bottom:12px;
+      width:220px;
+      height:124px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+      border-radius:8px;
+      overflow:hidden;
+      z-index:8;
+    }
+    .small video { width:100%; height:100%; object-fit:cover; }
+
+    /* big-screen CSS: full-screen cover */
     .big-video {
       position: fixed !important;
       top: 0 !important;
       left: 0 !important;
       width: 100vw !important;
       height: 100vh !important;
-      border-radius: 0 !important;
-      z-index: 9999 !important;
-      background: black;
-      object-fit: contain;
+      z-index: 99999 !important;
+      background: #000;
+      object-fit:contain !important;
     }
-
-    /* Picture-in-picture small local preview (bottom-right) */
-    .pip {
-      position: fixed !important;
-      right: 20px;
-      bottom: 20px;
-      width: 240px !important;
-      height: 135px !important;
-      z-index: 10000;
-      border-radius: 8px !important;
-      box-shadow: 0 6px 18px rgba(0,0,0,0.25);
-      background: black;
-      object-fit: cover;
-    }
-
-    /* Hide helper */
     .hide { display:none !important; }
 
-    /* Responsive tweaks */
-    @media (max-width: 720px){
-      video{ width:100%; height:240px; }
-      .video-row{ flex-direction:column; }
+    /* center hide-other overlay */
+    .center-placeholder {
+      position: absolute;
+      left:50%;
+      top:50%;
+      transform:translate(-50%,-50%);
+      background: rgba(7,10,18,0.6);
+      padding:16px 20px;
+      border-radius:10px;
+      color:var(--muted);
+      font-size:15px;
+      display:none;
+      z-index:20;
+    }
+    .center-placeholder.show { display:block; }
+
+    /* bottom toolbar */
+    .toolbar { display:flex; gap:8px; align-items:center; justify-content:center; padding:12px; }
+
+    /* Mobile responsiveness */
+    @media (max-width:880px){
+      .video-area { flex-direction:column; }
+      .video-col { width:100%; }
+      video { height:240px; max-height:320px; }
+      .small { width:160px; height:90px; }
     }
 
-    /* small title */
-    h1{ font-size:20px; margin:0 0 8px 0; }
+    /* sliders and labels */
+    .row { display:flex; gap:8px; align-items:center; }
+    label { color:var(--muted); font-size:13px; min-width:80px; }
+
+    .muted-note { color:var(--muted); font-size:13px; margin-top:6px; }
   </style>
 </head>
 <body>
-  <h1>LiveShare — 2 Person</h1>
+  <div class="app">
+    <header>
+      <div>
+        <h1>LiveShare — Clean Dark UI</h1>
+        <div class="muted-note">2-person peer-to-peer screen + camera + mic — admin room codes</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div style="color:var(--muted);font-size:13px">Status: <span id="status">idle</span></div>
+      </div>
+    </header>
 
-  <div class="panel" id="authPanel">
-    <h3 style="margin:0 0 8px 0">Admin: create room</h3>
-    <div class="controls">
-      <input id="adminPassword" type="password" placeholder="Admin password" />
-      <button id="createRoomBtn">Create Room</button>
-      <span id="roomCodeDisplay" style="margin-left:8px;font-weight:600;"></span>
+    <div class="top-row">
+      <div class="left-col panel">
+        <div style="font-weight:700;margin-bottom:8px">Room / Admin</div>
+        <div class="controls">
+          <input id="adminPassword" type="password" placeholder="Admin password" />
+          <button id="createRoomBtn">Create Room</button>
+          <span id="roomCodeDisplay" style="margin-left:8px;font-weight:700;color:#fff"></span>
+        </div>
+
+        <hr style="margin:12px 0;border:none;height:1px;background:rgba(255,255,255,0.02)"/>
+
+        <div class="controls">
+          <input id="joinCode" type="text" placeholder="Enter room code" />
+          <button id="joinBtn">Join Room</button>
+          <button id="leaveBtn" class="secondary" disabled>Leave</button>
+        </div>
+
+        <div style="height:12px"></div>
+
+        <div style="font-weight:700;margin-bottom:8px">Devices</div>
+        <div class="controls" style="flex-direction:column;align-items:stretch">
+          <div class="row">
+            <label>Camera</label>
+            <select id="cameraSelect"></select>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <label>Microphone</label>
+            <select id="micSelect"></select>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <label>Speaker</label>
+            <select id="speakerSelect"></select>
+          </div>
+          <div style="height:8px"></div>
+          <div class="controls">
+            <button id="startCamBtn">Start Camera + Mic</button>
+            <button id="stopCamBtn" class="secondary" disabled>Stop Camera</button>
+            <button id="shareScreenBtn" class="ghost">Share Screen (app/window)</button>
+          </div>
+          <div class="muted-note">Tip: For system audio on macOS install BlackHole; Windows: Stereo Mix or virtual cable.</div>
+        </div>
+      </div>
+
+      <div class="right-col panel">
+        <div style="font-weight:700;margin-bottom:8px">Layout & Controls</div>
+        <div class="controls" style="margin-bottom:10px">
+          <button id="btnRemoteBig" class="ghost">Make Remote Big</button>
+          <button id="btnLocalBig" class="ghost">Make Local Big</button>
+          <button id="btnNormalView" class="ghost">Normal View</button>
+          <button id="btnHideOther" class="ghost">Hide Other (center)</button>
+          <button id="btnFullscreen" class="ghost">Toggle Fullscreen</button>
+        </div>
+
+        <div style="margin-top:8px;font-weight:700;margin-bottom:6px">Adjustments</div>
+        <div class="controls" style="align-items:center">
+          <label>Local size</label>
+          <input id="localScale" type="range" min="0.4" max="1.2" step="0.05" value="1" />
+          <label style="margin-left:8px" id="localScaleLabel">100%</label>
+        </div>
+        <div style="margin-top:8px" class="controls">
+          <label>Remote size</label>
+          <input id="remoteScale" type="range" min="0.4" max="1.2" step="0.05" value="1" />
+          <label style="margin-left:8px" id="remoteScaleLabel">100%</label>
+        </div>
+
+        <div style="height:12px"></div>
+        <div style="font-weight:700;margin-bottom:8px">Quick Actions</div>
+        <div class="controls">
+          <button id="toggleMuteBtn" class="ghost">Mute Outgoing</button>
+          <button id="recordBtn" class="ghost">Start Recording</button>
+          <button id="downloadRecordBtn" class="ghost" disabled>Download</button>
+        </div>
+
+      </div>
     </div>
 
-    <hr style="margin:12px 0"/>
+    <div class="panel video-area" style="position:relative;overflow:hidden">
+      <!-- center placeholder for hide-other -->
+      <div id="centerPlaceholder" class="center-placeholder">Other hidden — click "Normal View" to restore</div>
 
-    <h3 style="margin:0 0 8px 0">Join room (participant)</h3>
-    <div class="controls">
-      <input id="joinCode" type="text" placeholder="Enter room code" />
-      <button id="joinBtn">Join Room</button>
-      <button id="leaveBtn" disabled class="secondary">Leave</button>
-    </div>
-  </div>
+      <div class="video-col video-frame" id="localFrame">
+        <div style="padding:8px;color:var(--muted);font-weight:600">You</div>
+        <video id="localVideo" autoplay muted playsinline></video>
+      </div>
 
-  <div class="panel" id="mediaPanel" style="display:none;">
-    <h3 style="margin:0 0 8px 0">Media & Share</h3>
-
-    <div class="controls" style="margin-bottom:8px;">
-      <button id="startCamBtn">Start Camera+Mic</button>
-      <button id="stopCamBtn" disabled class="secondary">Stop Camera</button>
-      <button id="shareScreenBtn" class="ghost">Share Screen (app/window)</button>
-      <button id="toggleAudioBtn" class="ghost">Mute/Unmute Outgoing Audio</button>
-      <button id="sendOfferBtn" disabled class="ghost">Make Call (if waiting)</button>
+      <div class="video-col video-frame" id="remoteFrame">
+        <div style="padding:8px;color:var(--muted);font-weight:600">Remote</div>
+        <video id="remoteVideo" autoplay playsinline></video>
+      </div>
     </div>
 
-    <div class="controls" style="margin-bottom:8px;">
-      <!-- Option D buttons -->
-      <button id="btnRemoteBig" class="ghost">Make Remote Big</button>
-      <button id="btnLocalBig" class="ghost">Make Local Big</button>
-      <button id="btnNormalView" class="ghost">Normal View</button>
-    </div>
-
-    <div id="status">Status: idle</div>
-    <hr style="margin:12px 0"/>
-
-    <div class="video-row">
-      <video id="localVideo" autoplay muted playsinline></video>
-      <video id="remoteVideo" autoplay playsinline></video>
+    <div class="toolbar panel">
+      <div style="flex:1;text-align:center;color:var(--muted)">Built for college testing — respect privacy & consent.</div>
     </div>
   </div>
 

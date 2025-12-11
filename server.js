@@ -78,7 +78,6 @@ io.on('connection', (socket) => {
   });
 
   socket.on('signal', ({ to, data }) => {
-    // relay signaling messages to specific socket id
     if (!to) return;
     io.to(to).emit('signal', { from: socket.id, data });
   });

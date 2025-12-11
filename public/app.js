@@ -1,4 +1,6 @@
-// Client-side app.js (modified to support Option D: button based switching)
+// public/app.js
+// Rewritten robust client with device selection, layout controls, recording and reliability improvements.
+
 const socket = io();
 let pc = null;
 let localStream = null;
@@ -7,209 +9,391 @@ let roomCode = null;
 let joined = false;
 let isMuted = false;
 let otherId = null;
-let layoutMode = 'normal'; // 'normal' | 'remote-big' | 'local-big'
+let recordingBlobs = [];
+let mediaRecorder = null;
 
-/* STUN servers */
+/* STUN servers (add TURN when needed) */
 const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-/* DOM */
-const createRoomBtn = document.getElementById('createRoomBtn');
+/* DOM references */
 const adminPassword = document.getElementById('adminPassword');
+const createRoomBtn = document.getElementById('createRoomBtn');
 const roomCodeDisplay = document.getElementById('roomCodeDisplay');
 const joinCode = document.getElementById('joinCode');
 const joinBtn = document.getElementById('joinBtn');
 const leaveBtn = document.getElementById('leaveBtn');
-const mediaPanel = document.getElementById('mediaPanel');
+
+const cameraSelect = document.getElementById('cameraSelect');
+const micSelect = document.getElementById('micSelect');
+const speakerSelect = document.getElementById('speakerSelect');
 const startCamBtn = document.getElementById('startCamBtn');
 const stopCamBtn = document.getElementById('stopCamBtn');
 const shareScreenBtn = document.getElementById('shareScreenBtn');
-const toggleAudioBtn = document.getElementById('toggleAudioBtn');
-const sendOfferBtn = document.getElementById('sendOfferBtn');
-const statusEl = document.getElementById('status');
-const localVideo = document.getElementById('localVideo');
-const remoteVideo = document.getElementById('remoteVideo');
 
-/* Option D buttons */
 const btnRemoteBig = document.getElementById('btnRemoteBig');
 const btnLocalBig = document.getElementById('btnLocalBig');
 const btnNormalView = document.getElementById('btnNormalView');
+const btnHideOther = document.getElementById('btnHideOther');
+const btnFullscreen = document.getElementById('btnFullscreen');
+const toggleMuteBtn = document.getElementById('toggleMuteBtn');
 
-function log(s){ console.log(s); statusEl.innerText = typeof s === 'string' ? 'Status: ' + s : 'Status: ' + JSON.stringify(s); }
+const localScale = document.getElementById('localScale');
+const remoteScale = document.getElementById('remoteScale');
+const localScaleLabel = document.getElementById('localScaleLabel');
+const remoteScaleLabel = document.getElementById('remoteScaleLabel');
 
-/* Admin create room */
+const recordBtn = document.getElementById('recordBtn');
+const downloadRecordBtn = document.getElementById('downloadRecordBtn');
+
+const statusEl = document.getElementById('status');
+const centerPlaceholder = document.getElementById('centerPlaceholder');
+
+const localVideo = document.getElementById('localVideo');
+const remoteVideo = document.getElementById('remoteVideo');
+const localFrame = document.getElementById('localFrame');
+const remoteFrame = document.getElementById('remoteFrame');
+
+function setStatus(s){ statusEl.innerText = s; console.log('[status]', s); }
+
+/* --- initialization --- */
+async function enumerateDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    const mics = devices.filter(d => d.kind === 'audioinput');
+    const speakers = devices.filter(d => d.kind === 'audiooutput');
+
+    cameraSelect.innerHTML = cams.length ? cams.map(c => `<option value="${c.deviceId}">${c.label || 'Camera ' + (cams.indexOf(c)+1)}</option>`).join('') : '<option value="">No camera</option>';
+    micSelect.innerHTML = mics.length ? mics.map(m => `<option value="${m.deviceId}">${m.label || 'Mic ' + (mics.indexOf(m)+1)}</option>`).join('') : '<option value="">No mic</option>';
+    speakerSelect.innerHTML = speakers.length ? speakers.map(s => `<option value="${s.deviceId}">${s.label || 'Speaker ' + (speakers.indexOf(s)+1)}</option>`).join('') : '<option value="">Default speaker</option>';
+  } catch (e) {
+    console.warn('enumerateDevices failed', e);
+  }
+}
+
+// run early
+enumerateDevices();
+
+/* --- Room / admin actions --- */
 createRoomBtn.onclick = async () => {
   const pw = adminPassword.value.trim();
   if (!pw) return alert('Enter admin password (see .env.example)');
-  const res = await fetch('/create-room', { method: 'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ password: pw }) });
-  const j = await res.json();
-  if (!j.ok) return alert('Create failed: ' + (j.error||'unknown'));
-  roomCode = j.code;
-  roomCodeDisplay.innerText = 'Room code: ' + roomCode;
-  joinCode.value = roomCode;
-  alert('Room created: ' + roomCode + '\nShare this code with another participant.');
+  try {
+    const res = await fetch('/create-room', {
+      method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ password: pw })
+    });
+    const j = await res.json();
+    if (!j.ok) return alert('Create failed: ' + (j.error || 'unknown'));
+    roomCode = j.code;
+    roomCodeDisplay.innerText = 'Room code: ' + roomCode;
+    joinCode.value = roomCode;
+    alert('Room created: ' + roomCode + '\nShare this code with your peer.');
+    setStatus('Room created: ' + roomCode);
+  } catch (e) {
+    alert('Create room failed: ' + e.message);
+  }
 };
 
-/* Join room */
-joinBtn.onclick = async () => {
+joinBtn.onclick = () => {
   const code = joinCode.value.trim();
   if (!code) return alert('Enter room code');
   roomCode = code;
   socket.emit('join-room', { room: roomCode });
 };
 
-/* Leave */
 leaveBtn.onclick = () => {
   socket.emit('leave-room');
   cleanup();
 };
 
-/* Start camera & mic */
+/* --- Media actions: start camera, stop, share screen --- */
 startCamBtn.onclick = async () => {
   try {
-    const s = await navigator.mediaDevices.getUserMedia({ video:true, audio:true });
+    const videoId = cameraSelect.value || undefined;
+    const micId = micSelect.value || undefined;
+    const constraints = {
+      audio: micId ? { deviceId: { exact: micId } } : true,
+      video: videoId ? { deviceId: { exact: videoId }, width: {ideal:1280}, height:{ideal:720} } : { width:1280, height:720 }
+    };
+    const s = await navigator.mediaDevices.getUserMedia(constraints);
     attachLocalStream(s);
+    setStatus('Camera + mic started');
+    // re-enumerate to update labels
+    enumerateDevices();
   } catch (e) {
-    alert('getUserMedia failed: ' + e.message);
+    alert('Could not start camera: ' + e.message);
+    console.error(e);
   }
 };
 
-/* Stop camera */
 stopCamBtn.onclick = () => {
   if (localStream) {
     localStream.getTracks().forEach(t => t.stop());
     localStream = null;
     localVideo.srcObject = null;
+    setStatus('Camera stopped');
   }
   stopCamBtn.disabled = true;
   startCamBtn.disabled = false;
 };
 
-/* Share screen/app (may include system audio if OS exposes it) */
 shareScreenBtn.onclick = async () => {
   try {
-    const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-    // If we already have a camera stream, replace video track; otherwise use screen as local stream
-    if (localStream) {
-      const screenTrack = screenStream.getVideoTracks()[0];
-      const oldVideoTrack = localStream.getVideoTracks()[0];
-      if (oldVideoTrack) {
-        localStream.removeTrack(oldVideoTrack);
-        localStream.addTrack(screenTrack);
-      } else {
-        localStream.addTrack(screenTrack);
-      }
-      // replace sender's track
-      const sender = pc && pc.getSenders().find(s => s.track && s.track.kind === 'video');
-      if (sender) sender.replaceTrack(screenTrack);
-    } else {
-      attachLocalStream(screenStream);
-    }
-
-    // when user stops screen sharing, log
-    const vTrack = screenStream.getVideoTracks()[0];
-    if (vTrack) vTrack.onended = () => {
-      log('Screen share ended');
-    };
+    // try to include system audio if the OS exposes it
+    const s = await navigator.mediaDevices.getDisplayMedia({ video:true, audio:true });
+    attachScreenStream(s);
+    setStatus('Screen sharing started');
   } catch (e) {
     alert('Screen share failed: ' + e.message);
+    console.error(e);
   }
 };
 
-/* Mute/unmute outgoing audio */
-toggleAudioBtn.onclick = () => {
-  if (!localStream) return;
-  const audioTracks = localStream.getAudioTracks();
-  if (audioTracks.length === 0) return;
+/* attach screen: choose to replace video track but keep mic */
+function attachScreenStream(screenStream) {
+  if (!screenStream) return;
+  const screenVideoTrack = screenStream.getVideoTracks()[0];
+  const screenAudioTrack = screenStream.getAudioTracks()[0];
+
+  // if we have localStream, replace its video track
+  if (localStream) {
+    const senders = pc ? pc.getSenders() : [];
+    const oldVideoTrack = localStream.getVideoTracks()[0];
+    if (oldVideoTrack) {
+      try { localStream.removeTrack(oldVideoTrack); } catch (e) {}
+    }
+    localStream.addTrack(screenVideoTrack);
+    // replace in peer connection
+    if (pc) {
+      const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+      if (videoSender) videoSender.replaceTrack(screenVideoTrack);
+      else pc.addTrack(screenVideoTrack, localStream);
+    }
+    // if screen provides audio and localStream has no audio, add it
+    if (screenAudioTrack && localStream.getAudioTracks().length === 0) {
+      localStream.addTrack(screenAudioTrack);
+      if (pc) pc.addTrack(screenAudioTrack, localStream);
+    }
+    localVideo.srcObject = localStream;
+  } else {
+    // no local stream exists - treat screen stream as local
+    attachLocalStream(screenStream);
+  }
+
+  // when screen sharing stops, remove screen track and try to restore camera if available
+  if (screenVideoTrack) {
+    screenVideoTrack.onended = () => {
+      setStatus('Screen share ended');
+      // Attempt to restart camera if previously selected
+      // (do NOT auto-start microphone without explicit permission in future)
+    };
+  }
+}
+
+/* Attach local stream (camera or screen as local) */
+function attachLocalStream(s) {
+  // stop existing local tracks
+  if (localStream) localStream.getTracks().forEach(t => t.stop());
+  localStream = s;
+  localVideo.srcObject = localStream;
+  stopCamBtn.disabled = false;
+  startCamBtn.disabled = true;
+
+  // If we already have a peer connection, replace or add tracks
+  if (pc) {
+    const senders = pc.getSenders();
+    localStream.getTracks().forEach(track => {
+      const sender = senders.find(s => s.track && s.track.kind === track.kind);
+      if (sender) {
+        try { sender.replaceTrack(track); } catch (e) { console.warn(e); }
+      } else {
+        pc.addTrack(track, localStream);
+      }
+    });
+  } else {
+    // if the other peer is present, create pc and offer
+    if (otherId) {
+      createPeerConnection().then(() => createAndSendOfferIfReady()).catch(console.error);
+    }
+  }
+}
+
+/* --- Layout controls --- */
+function clearVideoClasses() {
+  [localVideo, remoteVideo].forEach(v => {
+    v.classList.remove('big-video','small','hide');
+    // reset transforms / sizes
+    v.style.transform = '';
+  });
+  centerPlaceholder.classList.remove('show');
+}
+
+function setRemoteBig() {
+  clearVideoClasses();
+  remoteVideo.classList.add('big-video');
+  localVideo.classList.add('small');
+  centerPlaceholder.classList.remove('show');
+  setStatus('Remote big');
+}
+
+function setLocalBig() {
+  clearVideoClasses();
+  localVideo.classList.add('big-video');
+  remoteVideo.classList.add('small');
+  centerPlaceholder.classList.remove('show');
+  setStatus('Local big');
+}
+
+function setNormalView() {
+  clearVideoClasses();
+  setStatus('Normal view');
+}
+
+function hideOtherCentered() {
+  // hide remote and show a placeholder message in center
+  clearVideoClasses();
+  remoteVideo.classList.add('hide');
+  centerPlaceholder.classList.add('show');
+  setStatus('Other hidden (center)');
+}
+
+function toggleFullscreen() {
+  // if any element is fullscreen, exit; else put remoteFrame in fullscreen if remote big, else localFrame
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else {
+    // prefer remote if visible
+    if (!remoteVideo.classList.contains('hide')) {
+      remoteVideo.requestFullscreen?.();
+    } else {
+      localVideo.requestFullscreen?.();
+    }
+  }
+}
+
+/* attach events to layout buttons */
+btnRemoteBig.onclick = setRemoteBig;
+btnLocalBig.onclick = setLocalBig;
+btnNormalView.onclick = setNormalView;
+btnHideOther.onclick = hideOtherCentered;
+btnFullscreen.onclick = toggleFullscreen;
+
+/* scale sliders */
+localScale.oninput = () => {
+  const v = parseFloat(localScale.value);
+  localScaleLabel.innerText = Math.round(v*100) + '%';
+  localFrame.style.transform = `scale(${v})`;
+};
+remoteScale.oninput = () => {
+  const v = parseFloat(remoteScale.value);
+  remoteScaleLabel.innerText = Math.round(v*100) + '%';
+  remoteFrame.style.transform = `scale(${v})`;
+};
+
+/* Mute toggle */
+toggleMuteBtn.onclick = () => {
+  if (!localStream) return alert('Start camera first');
   isMuted = !isMuted;
-  audioTracks.forEach(t => t.enabled = !isMuted);
-  toggleAudioBtn.innerText = isMuted ? 'Unmute Outgoing Audio' : 'Mute Outgoing Audio';
+  localStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
+  toggleMuteBtn.innerText = isMuted ? 'Unmute Outgoing' : 'Mute Outgoing';
 };
 
-/* Manual offer */
-sendOfferBtn.onclick = async () => {
-  if (!pc) await createPeerConnection();
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  if (!otherId) return alert('No other peer id available to send offer to.');
-  socket.emit('signal', { to: otherId, data: { type: 'offer', sdp: offer.sdp } });
-  log('Offer sent');
+/* Recording */
+recordBtn.onclick = () => {
+  if (!localStream && !remoteStream) return alert('Start camera or wait for remote stream');
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    return;
+  }
+  recordingBlobs = [];
+  // prefer recording combined local+remote? here we record localStream only (can extend)
+  const toRecord = localStream || remoteStream;
+  try {
+    mediaRecorder = new MediaRecorder(toRecord, { mimeType: 'video/webm;codecs=vp9,opus' });
+  } catch (e) {
+    mediaRecorder = new MediaRecorder(toRecord);
+  }
+  mediaRecorder.ondataavailable = (ev) => { if(ev.data && ev.data.size) recordingBlobs.push(ev.data); };
+  mediaRecorder.onstop = () => {
+    downloadRecordBtn.disabled = false;
+    setStatus('Recording stopped');
+  };
+  mediaRecorder.start(1000);
+  setStatus('Recording started');
 };
 
-/* Socket event handling */
-socket.on('connect', () => log('socket connected: ' + socket.id));
+downloadRecordBtn.onclick = () => {
+  const blob = new Blob(recordingBlobs, { type: 'video/webm' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `recording-${Date.now()}.webm`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
 
-socket.on('joined', async ({ you, others }) => {
-  log('Joined room as ' + you + ', others: ' + JSON.stringify(others));
+/* --- WebRTC Signaling & PC creation --- */
+
+socket.on('connect', () => { setStatus('Connected to signaling'); });
+
+socket.on('joined', ({ you, others }) => {
+  setStatus('Joined as ' + you);
   joined = true;
-  mediaPanel.style.display = 'block';
   leaveBtn.disabled = false;
-  // If someone present, store otherId
   if (others && others.length > 0) {
     otherId = others[0];
-    log('Other present: ' + otherId + ' — waiting for offer or create one as needed.');
-    sendOfferBtn.disabled = false;
+    setStatus('Peer present: ' + otherId);
+    // if local stream exists, start call
+    if (localStream) {
+      createPeerConnection().then(() => createAndSendOfferIfReady()).catch(console.error);
+    }
   } else {
-    log('Waiting for peer to join...');
-    sendOfferBtn.disabled = true;
+    setStatus('Waiting for peer to join...');
   }
 });
 
 socket.on('peer-joined', ({ id }) => {
-  log('Peer joined: ' + id);
   otherId = id;
-  // If we have media, initiate call
+  setStatus('Peer joined: ' + id);
   if (localStream) {
-    createPeerConnection().then(async () => {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('signal', { to: otherId, data: { type: 'offer', sdp: offer.sdp } });
-      log('Sent offer to ' + otherId);
-    });
-  } else {
-    log('Start your camera/mic or screen to begin call.');
+    createPeerConnection().then(() => createAndSendOfferIfReady()).catch(console.error);
   }
-  sendOfferBtn.disabled = false;
 });
 
 socket.on('peer-left', ({ id }) => {
-  log('Peer left: ' + id);
+  setStatus('Peer left: ' + id);
   otherId = null;
   if (remoteVideo) remoteVideo.srcObject = null;
-  if (pc) {
-    pc.close();
-    pc = null;
-  }
-  // Reset layout to normal when peer leaves
+  if (pc) { pc.close(); pc = null; }
   setNormalView();
 });
 
 socket.on('error-message', (m) => alert('Server: ' + m));
 
 socket.on('signal', async ({ from, data }) => {
-  log('Signal from ' + from + ': ' + JSON.stringify(data && data.type));
+  // incoming signaling from remote
   if (!pc) await createPeerConnection();
   if (data.type === 'offer') {
     await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     socket.emit('signal', { to: from, data: { type: 'answer', sdp: answer.sdp } });
-    log('Answered offer');
+    setStatus('Answered offer');
   } else if (data.type === 'answer') {
     await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp });
-    log('Set remote answer');
+    setStatus('Received answer');
   } else if (data.type === 'ice') {
-    try {
-      await pc.addIceCandidate(data.candidate);
-      log('Added ICE candidate');
-    } catch (e) {
-      console.error(e);
-    }
+    try { await pc.addIceCandidate(data.candidate); } catch (e) { console.warn('ICE add failed', e); }
   }
 });
 
-/* Create RTCPeerConnection */
+/* Utility to create RTCPeerConnection */
 async function createPeerConnection() {
+  if (pc) return pc;
   pc = new RTCPeerConnection(config);
+
   remoteStream = new MediaStream();
   remoteVideo.srcObject = remoteStream;
 
@@ -220,149 +404,113 @@ async function createPeerConnection() {
   };
 
   pc.ontrack = (evt) => {
-    // Attach tracks to remoteStream
+    // prefer stream object if provided
     if (evt.streams && evt.streams[0]) {
-      evt.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
+      remoteVideo.srcObject = evt.streams[0];
+      remoteStream = evt.streams[0];
     } else {
-      // fallback
-      evt.track && remoteStream.addTrack(evt.track);
+      // fallback add track to remoteStream
+      if (!remoteStream) remoteStream = new MediaStream();
+      remoteStream.addTrack(evt.track);
+      remoteVideo.srcObject = remoteStream;
     }
   };
 
-  // add local tracks if present
+  pc.onconnectionstatechange = () => {
+    setStatus('PC state: ' + pc.connectionState);
+    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+      // keep UI responsive
+    }
+  };
+
+  // Add local tracks if present
   if (localStream) {
     localStream.getTracks().forEach(track => {
       pc.addTrack(track, localStream);
     });
   }
 
-  pc.onconnectionstatechange = () => {
-    log('PC state: ' + pc.connectionState);
-  };
-
   return pc;
 }
 
-/* Attach a local stream (camera or screen) */
-function attachLocalStream(s) {
-  // stop existing local tracks
-  if (localStream) {
-    localStream.getTracks().forEach(t => t.stop());
-  }
-  localStream = s;
-  localVideo.srcObject = localStream;
-  stopCamBtn.disabled = false;
-  startCamBtn.disabled = true;
-  // if peer connection exists, replace senders or add tracks
-  if (pc) {
-    const senders = pc.getSenders();
-    localStream.getTracks().forEach(track => {
-      const sender = senders.find(s => s.track && s.track.kind === track.kind);
-      if (sender) sender.replaceTrack(track);
-      else pc.addTrack(track, localStream);
-    });
-  } else {
-    // if a peer is present, initiate connection
-    if (otherId) {
-      createPeerConnection().then(() => {
-        // auto-offer
-        createAndSendOfferIfReady();
-      });
-    }
-  }
-}
-
-/* Create and send offer if pc exists and otherId set */
+/* Create offer and send to remote */
 async function createAndSendOfferIfReady() {
-  if (!pc) return;
+  if (!pc) await createPeerConnection();
   if (!otherId) return;
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   socket.emit('signal', { to: otherId, data: { type: 'offer', sdp: offer.sdp } });
-  log('Offer created and sent');
+  setStatus('Offer sent');
+}
+
+/* Attach local stream into pc or store for later */
+function ensureLocalTracksAddedToPc() {
+  if (!pc || !localStream) return;
+  const senders = pc.getSenders();
+  localStream.getTracks().forEach(track => {
+    const sender = senders.find(s => s.track && s.track.kind === track.kind);
+    if (sender) {
+      try { sender.replaceTrack(track); } catch (e) { console.warn(e); }
+    } else {
+      pc.addTrack(track, localStream);
+    }
+  });
 }
 
 /* Cleanup */
 function cleanup() {
-  if (localStream) {
-    localStream.getTracks().forEach(t => t.stop());
-    localStream = null;
-  }
-  if (pc) {
-    pc.close();
-    pc = null;
-  }
-  mediaPanel.style.display = 'none';
-  roomCode = null;
-  joined = false;
-  roomCodeDisplay.innerText = '';
-  joinCode.value = '';
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; localVideo.srcObject = null; }
+  if (pc) { pc.close(); pc = null; }
+  if (remoteVideo) remoteVideo.srcObject = null;
+  joined = false; otherId = null; roomCode = null;
   leaveBtn.disabled = true;
-  sendOfferBtn.disabled = true;
-  // reset view to normal
   setNormalView();
+  setStatus('Left');
 }
 
-/* Layout control functions for Option D */
-function setRemoteBig() {
-  // remove classes first
-  clearVideoClasses();
-  // apply remote big
-  remoteVideo.classList.add('big-video');
-  // local as pip
-  localVideo.classList.add('pip');
-  localVideo.classList.remove('hide'); // ensure visible
-  remoteVideo.classList.remove('hide');
-  layoutMode = 'remote-big';
-  log('Layout: remote big');
-}
-
-function setLocalBig() {
-  clearVideoClasses();
-  localVideo.classList.add('big-video');
-  // remote becomes pip (small) or hide remote? we'll make remote small inline
-  remoteVideo.classList.add('pip');
-  remoteVideo.classList.remove('hide');
-  localVideo.classList.remove('hide');
-  layoutMode = 'local-big';
-  log('Layout: local big');
-}
-
-function setNormalView() {
-  clearVideoClasses();
-  // ensure both visible with default style
-  localVideo.classList.remove('hide');
-  remoteVideo.classList.remove('hide');
-  layoutMode = 'normal';
-  log('Layout: normal');
-}
-
-/* helper to clear layout classes */
-function clearVideoClasses() {
-  [localVideo, remoteVideo].forEach(v => {
-    v.classList.remove('big-video', 'pip', 'hide');
-    // reset width/height to defaults by removing inline styles if any
-    v.style.width = '';
-    v.style.height = '';
-  });
-}
-
-/* attach button event listeners for Option D */
-btnRemoteBig.onclick = () => setRemoteBig();
-btnLocalBig.onclick = () => setLocalBig();
-btnNormalView.onclick = () => setNormalView();
-
-/* also allow clicking on videos to toggle respective big mode */
-localVideo.addEventListener('click', () => {
-  if (layoutMode === 'local-big') setNormalView();
-  else setLocalBig();
-});
-remoteVideo.addEventListener('click', () => {
-  if (layoutMode === 'remote-big') setNormalView();
-  else setRemoteBig();
-});
-
-/* beforeunload to leave room */
+/* Before unload */
 window.addEventListener('beforeunload', () => {
   if (joined) socket.emit('leave-room');
 });
+
+/* When devices change update the lists */
+navigator.mediaDevices?.addEventListener?.('devicechange', enumerateDevices);
+
+/* allow selecting speaker (some browsers support setSinkId) */
+speakerSelect.onchange = () => {
+  const id = speakerSelect.value;
+  if (typeof remoteVideo.sinkId !== 'undefined' && id) {
+    remoteVideo.setSinkId(id).catch(e => console.warn('setSinkId failed', e));
+  }
+};
+
+/* click on videos to toggle normal/big */
+localVideo.addEventListener('click', () => {
+  if (localVideo.classList.contains('big-video')) setNormalView(); else setLocalBig();
+});
+remoteVideo.addEventListener('click', () => {
+  if (remoteVideo.classList.contains('big-video')) setNormalView(); else setRemoteBig();
+});
+
+/* when user chooses devices in the dropdown, do nothing until startCam clicked.
+   but if localStream exists and user changes camera selection we can restart camera */
+cameraSelect.onchange = micSelect.onchange = async () => {
+  // if currently streaming from camera, restart local stream with chosen devices
+  if (localStream) {
+    try {
+      const cam = cameraSelect.value || undefined;
+      const mic = micSelect.value || undefined;
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: cam ? { deviceId: { exact: cam }, width:{ideal:1280}, height:{ideal:720} } : true,
+        audio: mic ? { deviceId: { exact: mic } } : true
+      });
+      attachLocalStream(s);
+      setStatus('Restarted local with new devices');
+    } catch (e) {
+      console.warn('device restart failed', e);
+    }
+  }
+};
+
+/* initial device enumeration on load */
+enumerateDevices();
